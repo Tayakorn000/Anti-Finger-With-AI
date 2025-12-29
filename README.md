@@ -2,7 +2,7 @@
 
 **Anti-Trigger Fingers With AI** เป็นแอปพลิเคชันสำหรับฝึกท่ามือ ป้องกันนิ้วล็อค (Trigger Fingers) ด้วย **คอมพิวเตอร์วิชัน** แบบเรียลไทม์ พร้อม **จับเวลา, แสดงภาพตัวอย่างท่า, และเสียงประกอบ**  
 
-##Instructional video
+## Instructional video
 คลิปแนะนำการใช้งาน : https://youtu.be/RKpKp6dGnQQ
 
 ---
