@@ -1,68 +1,59 @@
-# ============================================================
-#  🖐️ AI-Powered Anti-Trigger Fingers
-#  Developed by : Tayakorn000 & Achidesu
-#  Purpose      : Real-time hand-pose trainer to help prevent
-#                 trigger finger (นิ้วล็อค) by guiding users
-#                 through a set of finger exercises.
-#
-#  Highlights:
-#    - Real-time camera preview (OpenCV -> PIL -> CustomTkinter)
-#    - Hand landmarks & simple angle-based pose matching (MediaPipe)
-#    - Progress timer visualization + animated arc
-#    - Audio feedback (pygame) and history logging
-#    - Organized UI: main page + history page
-# ============================================================
-
-# ==== Library Imports =======================================
 from logging import root
-from PIL import Image, ImageTk           # Image processing + Tkinter bridge
-import customtkinter as ctk              # Modern Tkinter look-and-feel
-import cv2                               # OpenCV for camera I/O and image ops
-import mediapipe as mp                   # MediaPipe Hands: landmark detector
-import pygame                            # For playing short sound cues
-import time, threading                   # Threading for background loops, time helpers
-from datetime import datetime,timedelta           # Timestamps for logging
+from PIL import Image, ImageTk
+import customtkinter as ctk
+import cv2
+import mediapipe as mp
+import pygame
+import time, threading
+from datetime import datetime, timedelta
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.font_manager as fm
 from collections import defaultdict
-import sys,os
+import sys, os
 import tkinter as tk
 from tkinter import ttk
-# ============================================================
+import math
 
-
-# --- Main Application Class ---
 class AntiTriggerFingersApp(ctk.CTk):
 
-
     def __init__(self):
-        # --------------------
-        # Window / base setup
-        # --------------------
         super().__init__()
+        
+        # --- Screen & Scaling Setup ---
+        self.screen_width = self.winfo_screenwidth()
+        self.screen_height = self.winfo_screenheight()
+        
+        # Base resolution for calculation (Original design)
+        base_w = 1920
+        base_h = 1080
+
+        # Calculate scale factors
+        self.scale_w = self.screen_width / base_w
+        self.scale_h = self.screen_height / base_h
+        # Use the smaller scale for things that must maintain aspect ratio (fonts, circles, images)
+        self.u_scale = min(self.scale_w, self.scale_h)
+
         self.title("AI-Powered Anti-trigger Fingers")
         self.attributes("-fullscreen", True)
-        self.geometry("1920x1080+0+0")
+        self.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
         self.overrideredirect(True)       
         self.bind("<Escape>", lambda e: self.on_close())
         self.resizable(False, False)
         self.configure(fg_color="#FFFFFF")
 
-        # --------------------
-        # State variables
-        # --------------------
-        # These hold runtime state across UI and detection loops.
+        # --- Variables ---
         self.key_held = False
-        self.time_max = 5                            # seconds required per pose
-        self.time_current = self.time_max            # remaining seconds for current pose
-        self.hand_posit = 0                          # internal positive-match counter
-        self.still_hold = False                      # flag to prevent double countdown
-        self.current_pose = 1                        # index of current exercise pose
+        self.time_max = 5
+        self.time_current = self.time_max
+        self.hand_posit = 0
+        self.still_hold = False
+        self.current_pose = 1
         self.key = ""
         self.is_pass = False
-        self.round = 0                               # repetition counter (per-set)
-        self.set = 0                                 # sets completed
+        self.round = 0
+        self.set = 0
         self.pose_name = [
             "placeholder",
             "เหยียดมือตรง",
@@ -74,24 +65,16 @@ class AntiTriggerFingersApp(ctk.CTk):
         self.extent = 0
         self.progress = 0
 
-        # --------------------
-        # Camera setup
-        # --------------------
-        # OpenCV VideoCapture is used by the background MediaPipe thread.
+        # --- Camera Setup ---
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
-            # Fail gracefully: print message; UI will show placeholder until camera available.
             print("Error: Cannot open webcam")
         else:
-            print("✓ Camera opened successfully")
+            # Try to set camera to a decent resolution, will be resized later
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            print(f"✓ Camera set to: {self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}")
 
-        # --------------------
-        # UI theming constants
-        # --------------------
-        # Centralized colors and fonts allow consistent styling.
+        # --- UI Colors ---
         self.purple_bg = "#6a0dad"
         self.light_gray_bg = "#d9d9d9"
         self.light_gray_bg_program = "white"
@@ -104,38 +87,45 @@ class AntiTriggerFingersApp(ctk.CTk):
         self.white_fg = "#ffffff"
         self.black_fg = "black"
 
-        # Font definitions (Sarabun used in the original; fallback handled by system)
-        self.font_large_title = ("Sarabun", 60, "bold")
-        self.font_medium_text = ("Sarabun", 50, "bold")
-        self.font_timer = ("Sarabun", 60, "bold")
-        self.font_pose_text = ("Sarabun", 50, "bold")
+        # --- Scaled Fonts ---
+        self.font_large_title = ("Sarabun", int(60 * self.u_scale), "bold")
+        self.font_medium_text = ("Sarabun", int(50 * self.u_scale), "bold")
+        self.font_timer = ("Sarabun", int(60 * self.u_scale), "bold")
+        self.font_pose_text = ("Sarabun", int(40 * self.u_scale), "bold") # Reduced slightly for better fit
+        self.font_btn_text = ("Sarabun", int(50 * self.u_scale), "bold")
+        self.font_small = ("Sarabun", int(25 * self.u_scale))
 
-        # --------------------------------------------------------------------
-        # Top bar / header
-        # --------------------------------------------------------------------
-        # Contains logo and application title. Uses try/except to gracefully
-        # fall back to text if the logo file is missing.
-        self.top_bar_frame = ctk.CTkFrame(self, fg_color=self.purple_bg, height=150)
+        # --- Scaled Dimensions ---
+        top_bar_h = int(150 * self.scale_h)
+        logo_size = int(140 * self.u_scale)
+        self.camera_width = int(400 * self.scale_w)
+        self.camera_height = int(570 * self.scale_h)
+        btn_h = int(80 * self.scale_h)
+        btn_w = int(260 * self.scale_w)
+        
+        # Timer canvas scaling
+        self.timer_canvas_size = int(260 * self.u_scale)
+        self.timer_pad = 10
+
+        # --- UI Layout ---
+        self.top_bar_frame = ctk.CTkFrame(self, fg_color=self.purple_bg, height=top_bar_h)
         self.top_bar_frame.pack(side="top", fill="x")
         self.top_bar_frame.pack_propagate(False)
 
         try:
             logo_image_pil = Image.open("pictures/logo.png")
-            logo_image_pil = logo_image_pil.resize((140, 140))
+            logo_image_pil = logo_image_pil.resize((logo_size, logo_size), Image.LANCZOS)
             self.logo_photo = ImageTk.PhotoImage(logo_image_pil)
             self.logo_label = ctk.CTkLabel(
                 self.top_bar_frame, image=self.logo_photo, fg_color=self.purple_bg, text=""
             )
-            self.logo_label.pack(side="left", padx=20, pady=10)
+            self.logo_label.pack(side="left", padx=int(20 * self.scale_w), pady=int(10 * self.scale_h))
         except FileNotFoundError:
-            # Keep a clean textual placeholder instead of crashing.
             self.logo_label = ctk.CTkLabel(
                 self.top_bar_frame, text="LOGO", font=("Sarabun", 20), text_color=self.white_fg, fg_color=self.purple_bg
             )
             self.logo_label.pack(side="left", padx=20, pady=10)
-            print("Warning: logo.png not found. Using text placeholder.")
 
-        # Title label (large, left side)
         self.app_title_label = ctk.CTkLabel(
             self.top_bar_frame,
             text="AI-Powered Anti-trigger Fingers",
@@ -145,42 +135,43 @@ class AntiTriggerFingersApp(ctk.CTk):
         )
         self.app_title_label.pack(side="left", padx=20, pady=10)
 
-        # --------------------------------------------------------------------
-        # Main content layout (grid)
-        # --------------------------------------------------------------------
-        # The main_content_frame uses a 3-column grid:
-        #   column 0 = camera preview (left)
-        #   column 1 = pose/sets info (center)
-        #   column 2 = timer + example pose (right)
+        # Main Content Grid
         self.main_content_frame = ctk.CTkFrame(self, fg_color=self.light_gray_bg_program)
-        self.main_content_frame.pack(side="top", fill="both", expand=True, pady=20)
-        self.main_content_frame.grid_columnconfigure(0, weight=1, minsize=600)
-        self.main_content_frame.grid_columnconfigure(1, weight=1, minsize=600)
-        self.main_content_frame.grid_columnconfigure(2, weight=1, minsize=600)
+        self.main_content_frame.pack(side="top", fill="both", expand=True, pady=int(20 * self.scale_h))
+        
+        # Calculate column weights and minsize dynamically
+        col_min = int(self.screen_width / 3)
+        self.main_content_frame.grid_columnconfigure(0, weight=1, minsize=col_min)
+        self.main_content_frame.grid_columnconfigure(1, weight=1, minsize=col_min)
+        self.main_content_frame.grid_columnconfigure(2, weight=1, minsize=col_min)
         self.main_content_frame.grid_rowconfigure(0, weight=1)
         self.main_content_frame.grid_rowconfigure(1, weight=1)
         self.main_content_frame.grid_rowconfigure(2, weight=1)
 
-        # --------------------------------------------------------------------
-        # Left column: live camera preview
-        # --------------------------------------------------------------------
-        # We prepare a placeholder image so that the UI label always has an image
-        # object (avoids Tkinter 'image garbage collected' problems).
-        self.camera_width = 400
-        self.camera_height = 570
+        # Left Column: Camera
         placeholder = Image.new("RGB", (self.camera_width, self.camera_height), (200, 200, 200))
         self.camera_photo = ImageTk.PhotoImage(placeholder)
         self.camera_label = ctk.CTkLabel(self.main_content_frame, image=self.camera_photo, text="")
-        self.camera_label.grid(row=0, column=0, rowspan=3, padx=40, pady=20, sticky="nsew")
+        self.camera_label.grid(row=0, column=0, rowspan=3, padx=int(40 * self.scale_w), pady=20, sticky="nsew")
 
-        # --------------------------------------------------------------------
-        # Middle column: sets & rounds + pose textual description
-        # --------------------------------------------------------------------
-        # This area shows current repetition count and the name of the pose.
-        self.set_times_frame = ctk.CTkFrame(self.main_content_frame, fg_color=self.light_gray_bg, border_width=1)
-        self.set_times_frame.grid(row=0, column=1, padx=20, pady=10, sticky="ew")
+        # --- Center Column: Info (จัดกึ่งกลางจอสมบูรณ์) ---
+        # 1. สร้างพื้นที่หลักสำหรับคอลัมน์กลาง (ครอบคลุม Row 0 และ 1 เพื่อให้มีพื้นที่เต็มความสูง)
+        self.center_info_container = ctk.CTkFrame(self.main_content_frame, fg_color="transparent")
+        self.center_info_container.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=20, pady=10)
+
+        # 2. สร้าง Wrapper (กรอบลอย) เพื่อจัดเนื้อหาให้อยู่กึ่งกลาง
+        # การใช้ pack(expand=True) จะทำให้กรอบนี้ลอยอยู่กลางพื้นที่ว่างโดยอัตโนมัติ
+        self.center_wrapper = ctk.CTkFrame(self.center_info_container, fg_color="transparent")
+        self.center_wrapper.pack(expand=True, fill="x")
+
+        # --- ส่วนประกอบที่ 1: กล่องสีเทาบน (Set Info) ---
+        self.set_times_frame = ctk.CTkFrame(self.center_wrapper, fg_color=self.light_gray_bg, border_width=1)
+        self.set_times_frame.pack(side="top", fill="x", pady=(0, 15)) # เว้นระยะล่าง 15
+
+        # เนื้อหาข้างในกล่องบน (เหมือนเดิม)
         self.times_line_frame = ctk.CTkFrame(self.set_times_frame, fg_color=self.light_gray_bg)
         self.times_line_frame.pack(side="top", pady=(10, 0))
+        
         self.Label_times_text = ctk.CTkLabel(
             self.times_line_frame,
             text="ครั้งที่ : ",
@@ -193,8 +184,10 @@ class AntiTriggerFingersApp(ctk.CTk):
             self.times_line_frame, text=f"{self.round}", font=self.font_medium_text, text_color=self.black_fg, fg_color=self.light_gray_bg
         )
         self.Label_set_times_number.pack(side="left", padx=(0, 10))
+
         self.sets_line_frame = ctk.CTkFrame(self.set_times_frame, fg_color=self.light_gray_bg)
         self.sets_line_frame.pack(side="top", pady=(0, 10))
+        
         self.Label_set_text = ctk.CTkLabel(
             self.sets_line_frame, text="เซ็ตที่ : ", font=self.font_medium_text, text_color=self.black_fg, fg_color=self.light_gray_bg
         )
@@ -204,9 +197,21 @@ class AntiTriggerFingersApp(ctk.CTk):
         )
         self.Label_set_number.pack(side="left", padx=(0, 10))
 
-        # Pose description block
-        self.pose_text_frame = ctk.CTkFrame(self.main_content_frame, fg_color=self.light_gray_bg, border_width=1)
-        self.pose_text_frame.grid(row=1, column=1, padx=20, pady=10, sticky="ew")
+        # --- ส่วนประกอบที่ 2: ข้อความคั่นกลาง ---
+        self.guideline_label = ctk.CTkLabel(
+            self.center_wrapper,
+            text="ควรทำอย่างน้อย 2-3 เซ็ตต่อวัน",
+            font=self.font_small, 
+            text_color=self.black_fg,
+            fg_color="transparent"
+        )
+        self.guideline_label.pack(side="top", pady=15) # เว้นระยะ บน-ล่าง
+
+        # --- ส่วนประกอบที่ 3: กล่องสีเทาล่าง (Pose Info) ---
+        self.pose_text_frame = ctk.CTkFrame(self.center_wrapper, fg_color=self.light_gray_bg, border_width=1)
+        self.pose_text_frame.pack(side="top", fill="x", pady=(15, 0)) # เว้นระยะบน 15
+
+        # เนื้อหาข้างในกล่องล่าง (เหมือนเดิม)
         self.Label_pose_thai_text = ctk.CTkLabel(
             self.pose_text_frame, text=f"ท่าที่ {self.current_pose}", font=self.font_pose_text, text_color=self.black_fg, fg_color=self.light_gray_bg
         )
@@ -216,176 +221,150 @@ class AntiTriggerFingersApp(ctk.CTk):
         )
         self.Label_pose_action_text.pack(side="top", pady=(0, 10))
 
-        # --------------------------------------------------------------------
-        # Bottom controls: Start / Reset
-        # --------------------------------------------------------------------
-        # Big buttons for touch-friendly interaction in kiosk mode.
+        # Buttons
         self.controls_center_frame = ctk.CTkFrame(self.main_content_frame, fg_color=self.light_gray_bg_program)
         self.controls_center_frame.grid(row=2, column=0, columnspan=3, pady=(10, 20), sticky="ew")
         self.buttons_inner = ctk.CTkFrame(self.controls_center_frame, fg_color=self.light_gray_bg_program)
         self.buttons_inner.pack(expand=True)
+        
         self.start_stop_button = ctk.CTkButton(
             self.buttons_inner,
             text="เริ่มต้น",
-            font=("Sarabun", 50, "bold"),
+            font=self.font_btn_text,
             fg_color=self.green_btn,
             text_color=self.white_fg,
             command=lambda: self.toggle_start_pause(),
-            height=80,
-            width=260,
+            height=btn_h,
+            width=btn_w,
             hover_color=self.hover_green_bt,
         )
-        self.start_stop_button.grid(row=0, column=0, padx=50, pady=5)
+        self.start_stop_button.grid(row=0, column=0, padx=int(50 * self.scale_w), pady=5)
+        
         self.reset_button = ctk.CTkButton(
             self.buttons_inner,
             text="รีเซ็ต",
-            font=("Sarabun", 50, "bold"),
+            font=self.font_btn_text,
             fg_color=self.red_btn,
             text_color=self.white_fg,
             command=lambda: self.reset_action(),
-            height=80,
-            width=260,
+            height=btn_h,
+            width=btn_w,
             hover_color=self.hover_red_bt,
         )
-        self.reset_button.grid(row=0, column=1, padx=30, pady=5)
+        self.reset_button.grid(row=0, column=1, padx=int(30 * self.scale_w), pady=5)
 
-        # --------------------------------------------------------------------
-        # Right column top: Timer circle + animated progress arc
-        # --------------------------------------------------------------------
+        # Right Column: Timer & Example
         self.timer_frame = ctk.CTkFrame(self.main_content_frame, fg_color=self.white_fg)
         self.timer_frame.grid(row=0, column=2, padx=20, pady=20, sticky="n")
-        self.timer_canvas_size = 260
-        self.timer_pad = 10
+        
         self.timer_canvas = ctk.CTkCanvas(
             self.timer_frame, width=self.timer_canvas_size, height=self.timer_canvas_size, bg=self.white_fg, highlightthickness=0
         )
         self.timer_canvas.pack()
+        
         left = self.timer_pad
         top = self.timer_pad
         right = self.timer_canvas_size - self.timer_pad
         bottom = self.timer_canvas_size - self.timer_pad
-        # draw initial neutral circle
         self.timer_canvas.create_oval(left, top, right, bottom, outline="#3CB371", width=10, tags="progress")
         center = self.timer_canvas_size // 2
         self.timer_text = self.timer_canvas.create_text(center, center, text=f"{self.time_current}", font=self.font_timer, fill=self.black_fg)
 
-        # Timer animation bookkeeping variables (used by _animate_timer)
         self.timer_anim_job = None
         self._timer_anim_from = 0.0
         self._timer_anim_to = 0.0
         self._timer_anim_start = 0.0
         self._timer_anim_duration = 0.0
 
-        # --------------------------------------------------------------------
-        # Right column bottom: example pose (small image) + history button
-        # --------------------------------------------------------------------
-        # Load example pose image if it exists; otherwise show placeholder text.
+        # Example Pose Image
+        img_size = int(300 * self.u_scale)
         try:
             small_hand_image_pil = Image.open("pictures/EX_POSE/pose1.png")
-            small_hand_image_pil = small_hand_image_pil.resize((300, 300), Image.LANCZOS)
+            small_hand_image_pil = small_hand_image_pil.resize((img_size, img_size), Image.LANCZOS)
             self.small_hand_photo = ImageTk.PhotoImage(small_hand_image_pil)
             self.small_hand_label = ctk.CTkLabel(self.main_content_frame, image=self.small_hand_photo, text="")
             self.small_hand_label.grid(row=1, column=2, padx=20, pady=(0, 20), sticky="n")
         except FileNotFoundError:
-            # Keep a clear textual placeholder instead of failing.
             self.small_hand_label = ctk.CTkLabel(
-                self.main_content_frame, text="Small Hand\nImage\n(Placeholder)", font=("Sarabun", 16), bg="lightgray", width=15, height=10
+                self.main_content_frame, text="Example Pose", font=("Sarabun", 16), bg="lightgray", width=15, height=10
             )
             self.small_hand_label.grid(row=1, column=2, padx=20, pady=(0, 20), sticky="n")
-            print("Warning: small_hand.png not found. Using text placeholder.")
 
-        # History / report button
         self.small_hand_bottom_frame = ctk.CTkFrame(self.main_content_frame, fg_color=self.light_gray_bg_program)
         self.small_hand_bottom_frame.grid(row=2, column=2, pady=(0, 20))
+        
         self.log_button = ctk.CTkButton(
             self.small_hand_bottom_frame,
             text="รายงาน",
-            font=("Sarabun", 50, "bold"),
+            font=self.font_btn_text,
             fg_color="#4285F4",
             text_color=self.white_fg,
             command=lambda: self.show_history_page(),
-            height=80,
-            width=240,
+            height=btn_h,
+            width=int(240 * self.scale_w),
             hover_color="#3367D6",
         )
-        self.log_button.pack(side="right", padx=140)
+        self.log_button.pack(side="right", padx=int(140 * self.scale_w))
 
-        # --------------------------------------------------------------------
-        # History page: separate frame shown when user clicks "รายงาน"
-        # --------------------------------------------------------------------
+        # --- History Page ---
         self.history_page = ctk.CTkFrame(self, fg_color=self.light_gray_bg_program)
-        self.history_title = ctk.CTkLabel(self.history_page, text="รายงานย้อนหลัง", font=("Sarabun", 55, "bold"), text_color=self.black_fg)
+        self.history_title = ctk.CTkLabel(self.history_page, text="รายงานย้อนหลัง", font=("Sarabun", int(55 * self.u_scale), "bold"), text_color=self.black_fg)
         self.history_title.pack(pady=5)
         
-        # Chart container (กราฟอยู่บนสุด)
-        self.chart_container = tk.Frame(
-            self.history_page,
-            bg="white"
-        )
+        self.chart_container = tk.Frame(self.history_page, bg="white")
         self.chart_container.pack(fill="both", expand=True, padx=40, pady=(10, 5))
         self.history_content_frame = ctk.CTkFrame(self.history_page, fg_color=self.light_gray_bg_program)
         self.history_content_frame.pack(fill="x", padx=40, pady=(0, 0))
 
-        # Text box (ซ้าย)
         self.history_textbox = ctk.CTkTextbox(
             self.history_content_frame,
-            width=1000,
-            height=250,
-            font=("Sarabun", 20),
+            width=int(1000 * self.scale_w),
+            height=int(250 * self.scale_h),
+            font=("Sarabun", int(20 * self.u_scale)),
             text_color=self.black_fg,
             fg_color="#CCC9C9",
         )
-        self.history_textbox.pack(side="left", padx=100, pady=(0, 0))
+        self.history_textbox.pack(side="left", padx=int(100 * self.scale_w), pady=0)
 
-        # ปุ่มกลับ (ขวา บรรทัดเดียวกัน)
         self.back_button = ctk.CTkButton(
             self.history_content_frame,
             text="กลับ",
-            font=("Sarabun", 40, "bold"),
+            font=("Sarabun", int(40 * self.u_scale), "bold"),
             fg_color="#FF9800",
             text_color="white",
             hover_color="#E68900",
             command=self.show_main_page,
-            height=80,
-            width=260
+            height=btn_h,
+            width=btn_w
         )
-        self.back_button.pack(side="right", padx=(70, 100), pady=(100, 0))
+        self.back_button.pack(side="right", padx=(int(70 * self.scale_w), int(100 * self.scale_w)), pady=(int(100 * self.scale_h), 0))
 
         self.pose_sounds = {1: ["001.mp3"], 2: ["002.mp3"], 3: ["003.mp3"], 4: ["004.mp3"], 5: ["005.mp3"]}
-        
-        # ============ HELPER: GET HISTORY FROM FILE ============
         self.current_chart = None
 
-        # ============ SOUND SETUP ============
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
         except Exception as e:
-            # Non-fatal: continue without audio
             print(f"[Sound] Pygame mixer init error: {e}")
 
-        # ============ RUNTIME STATE ============
         self.running = False
         self.countdown_active = False
         self.countdown_job = None
         self.countdown_total = 0
         self.countdown_end_time = 0
 
-        # ============ START MEDIAPIPE THREAD ============
         self.mp_running = True
         self.mp_thread = threading.Thread(target=self._mediapipe_loop, daemon=True)
         self.mp_thread.start()
 
         self.check_sensor_loop()
-
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def get_history_from_file(self):
-        """Read history from file and return processed data"""
         FILE_PATH = "Anti-Finger.txt"
-        DAILY_TARGET_REPS = 30  # change this if your daily target (in reps) differs
+        DAILY_TARGET_REPS = 30
         poses_per_rep = 5
         reps_per_set = 10
-
         daily_poses = defaultdict(int)
 
         if not os.path.exists(FILE_PATH):
@@ -395,17 +374,13 @@ class AntiTriggerFingersApp(ctk.CTk):
             with open(FILE_PATH, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if not line:
-                        continue
-                    # Expect lines like: [2025-10-01 08:00:07] เซ็ตที่ 1 ครั้งที่ 1 ท่าที่ 1 : ...
-                    if not line.startswith("["):
+                    if not line or not line.startswith("["):
                         continue
                     try:
                         date_str = line.split("]")[0][1:]
                         date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
                         daily_poses[date.date()] += 1
                     except Exception:
-                        # if parsing fails, skip this line
                         continue
         except Exception as e:
             print(f"Error reading file: {e}")
@@ -421,9 +396,8 @@ class AntiTriggerFingersApp(ctk.CTk):
 
         while day <= last_day:
             poses = daily_poses.get(day, 0)
-            reps = poses // poses_per_rep            # full repetitions (1 rep = 5 poses)
-            sets_done = reps // reps_per_set        # full sets (1 set = 10 reps)
-            # progress as percent of DAILY_TARGET_REPS (in reps)
+            reps = poses // poses_per_rep
+            sets_done = reps // reps_per_set
             if DAILY_TARGET_REPS > 0:
                 progress = min((reps / float(DAILY_TARGET_REPS)) * 100.0, 100.0)
             else:
@@ -436,7 +410,6 @@ class AntiTriggerFingersApp(ctk.CTk):
                 'sets_done': sets_done,
                 'progress': progress,
             })
-
             day += timedelta(days=1)
 
         history.sort(key=lambda x: x['date'])
@@ -456,6 +429,19 @@ class AntiTriggerFingersApp(ctk.CTk):
             return
 
         try:
+            font_path = "Sarabun.ttf" 
+            
+            # ตรวจสอบว่าเจอไฟล์ไหม ถ้าไม่เจอให้ใช้ Tahoma แทน (กัน error)
+            if os.path.exists(font_path):
+                thai_font_prop = fm.FontProperties(fname=font_path, size=14)
+                title_font_prop = fm.FontProperties(fname=font_path, size=16, weight='bold')
+            else:
+                # Fallback กรณีหาไฟล์ไม่เจอ ให้ลองเรียกชื่อฟอนต์มาตรฐานใน Windows
+                print(f"Warning: Font file {font_path} not found. Using Tahoma.")
+                thai_font_prop = fm.FontProperties(family='Tahoma', size=14)
+                title_font_prop = fm.FontProperties(family='Tahoma', size=16, weight='bold')
+            # -------------------------------
+
             # Main frame สำหรับ chart + control
             main_frame = tk.Frame(self.chart_container, bg="white")
             main_frame.pack(fill=tk.BOTH, expand=True)
@@ -465,39 +451,35 @@ class AntiTriggerFingersApp(ctk.CTk):
             chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
             # Control frame (ขวา)
-            control_frame = tk.Frame(main_frame, bg="white", width=200, height=400)
+            control_frame = tk.Frame(main_frame, bg="white", width=int(200 * self.scale_w))
             control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
-            control_frame.pack_propagate(False)
 
-            # Dropdown เลือกวัน
+            # ... (ส่วน Dropdown และ Legend เหมือนเดิม) ...
             tk.Label(control_frame, text="Select Date:", bg="white", font=("Sarabun", 14)).pack(anchor='w', pady=5)
             date_var = tk.StringVar()
             date_combo = ttk.Combobox(control_frame, textvariable=date_var, width=15, state='readonly')
             date_combo.pack(anchor='w', padx=5)
 
-            # Legend
             tk.Label(control_frame, text="\nLegend", bg="white", font=("Sarabun", 12, "bold")).pack(anchor='w', pady=(10, 5))
             tk.Label(control_frame, text="🔴 Red: <50%", bg="white", fg="red", font=("Sarabun", 12)).pack(anchor='w')
             tk.Label(control_frame, text="🟢 Green: ≥50%", bg="white", fg="green", font=("Sarabun", 12)).pack(anchor='w')
             tk.Label(control_frame, text="↑ ดีขึ้น", bg="white", fg="green", font=("Sarabun", 12)).pack(anchor='w')
             tk.Label(control_frame, text="↓ แย่ลง", bg="white", fg="orange", font=("Sarabun", 12)).pack(anchor='w')
 
-            # Feedback label
-            feedback_label = tk.Label(control_frame, text="", bg="lightyellow", justify='left', wraplength=400, 
+            feedback_label = tk.Label(control_frame, text="", bg="lightyellow", justify='left', wraplength=int(400 * self.scale_w), 
                                      font=("Sarabun", 12), relief=tk.SUNKEN, padx=5, pady=5)
             feedback_label.pack(fill='x', pady=10, padx=5)
 
             # Create chart
-            fig, ax = plt.subplots(figsize=(12, 5), dpi=80)
+            fig, ax = plt.subplots(figsize=(10, 4), dpi=80) 
             fig.patch.set_facecolor('white')
 
             dates = [h['date'] for h in history]
             progresses = [h['progress'] for h in history]
 
-            # Prepare OHLC data
+            # Prepare OHLC data (เหมือนเดิม)
             o, h_, l, c = [], [], [], []
             prev = progresses[0] if progresses else 0
-            
             for p in progresses:
                 o.append(prev)
                 c.append(p)
@@ -507,11 +489,10 @@ class AntiTriggerFingersApp(ctk.CTk):
                 l.append(low)
                 prev = p
 
-            # Draw bars and lines
+            # Draw bars (เหมือนเดิม)
             points = []
             for i, p in enumerate(progresses):
                 prev_prog = progresses[i-1] if i > 0 else None
-                
                 if prev_prog is None:
                     color = (1, 0, 0) if p < 50 else (0, 1, 0)
                 elif p > prev_prog:
@@ -526,17 +507,22 @@ class AntiTriggerFingersApp(ctk.CTk):
                 
                 if prev_prog is not None:
                     if p > prev_prog:
-                        ax.annotate('↑', xy=(dates[i], c[i]+3), ha='center', color='green', fontsize=12)
+                        # ใช้ fontproperties แทน font
+                        ax.annotate('↑', xy=(dates[i], c[i]+3), ha='center', color='green', fontproperties=thai_font_prop)
                     elif p < prev_prog:
-                        ax.annotate('↓', xy=(dates[i], c[i]+3), ha='center', color='black', fontsize=12)
+                        ax.annotate('↓', xy=(dates[i], c[i]+3), ha='center', color='black', fontproperties=thai_font_prop)
                 
                 point, = ax.plot(dates[i], c[i], 'o', color='black', markersize=8)
                 points.append((point, dates[i], p, history[i]['sets_done'], i))
 
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%b'))
-            ax.set_ylabel("ความสำเร็จ (%)", font={'family': 'Sarabun', 'size': 18, 'weight': 'bold'})
+            
+            # --- จุดสำคัญที่แก้: ใช้ fontproperties ---
+            ax.set_ylabel("ความสำเร็จ (%)", fontproperties=thai_font_prop)
+            ax.set_title("สถิติของคุณ", fontproperties=title_font_prop)
+            # ------------------------------------
+
             ax.set_ylim(0, 110)
-            ax.set_title("สถิติของคุณ", font={'family': 'Sarabun', 'size': 18, 'weight': 'bold'})
             ax.grid(True, linestyle='--', alpha=0.5)
             fig.autofmt_xdate()
             fig.tight_layout()
@@ -545,28 +531,24 @@ class AntiTriggerFingersApp(ctk.CTk):
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True)
 
-            # Populate date combo
+            # ... (ส่วนที่เหลือเหมือนเดิม) ...
             date_list = [h['date'].strftime('%d-%b-%Y') for h in history]
             date_combo['values'] = date_list
             if date_list:
                 date_combo.set(date_list[-1])
 
             def feedback_text(prog, prev_prog):
-                if prog == 0:
-                    return "วันนี้คุณยังไม่ได้ทำ 🔴"
-                elif prev_prog is not None and prog < prev_prog:
-                    return "วันนี้คุณทำได้น้อยลง ↓"
-                elif prev_prog is not None and prog > prev_prog:
-                    return "วันนี้คุณทำได้ดีขึ้น ↑"
-                elif prog < 50:
-                    return "วันนี้คุณทำได้น้อยลง ↓"
-                else:
-                    return "วันนี้คุณทำได้ตามปกติ ✓"
+                # ... (Logic เหมือนเดิม) ...
+                if prog == 0: return "วันนี้คุณยังไม่ได้ทำ 🔴"
+                elif prev_prog is not None and prog < prev_prog: return "วันนี้คุณทำได้น้อยลง ↓"
+                elif prev_prog is not None and prog > prev_prog: return "วันนี้คุณทำได้ดีขึ้น ↑"
+                elif prog < 50: return "วันนี้คุณทำได้น้อยลง ↓"
+                else: return "วันนี้คุณทำได้ตามปกติ ✓"
 
             def update_feedback(event=None):
+                # ... (Logic เหมือนเดิม) ...
                 selected_date_str = date_var.get()
-                if not selected_date_str:
-                    return
+                if not selected_date_str: return
                 try:
                     selected_date = datetime.strptime(selected_date_str, '%d-%b-%Y').date()
                     idx = next((i for i, h in enumerate(history) if h['date'].date() == selected_date), None)
@@ -576,12 +558,11 @@ class AntiTriggerFingersApp(ctk.CTk):
                         prev_prog = history[idx-1]['progress'] if idx > 0 else None
                         fb = feedback_text(prog, prev_prog)
                         feedback_label.config(text=f"{selected_date_str}\nProgress: {prog:.0f}%\nSets: {sets}\n{fb}")
-                except Exception as e:
-                    print(f"Error: {e}")
+                except Exception as e: print(f"Error: {e}")
 
             def on_click(event):
-                if event.inaxes != ax:
-                    return
+                # ... (Logic เหมือนเดิม) ...
+                if event.inaxes != ax: return
                 for point, date, prog, sets, idx in points:
                     xdata = mdates.date2num(date)
                     ydata = prog
@@ -594,10 +575,7 @@ class AntiTriggerFingersApp(ctk.CTk):
 
             date_combo.bind("<<ComboboxSelected>>", update_feedback)
             canvas.mpl_connect("button_press_event", on_click)
-
-            # Show initial feedback
             update_feedback()
-
             self.current_chart = (fig, canvas)
 
         except Exception as e:
@@ -605,9 +583,7 @@ class AntiTriggerFingersApp(ctk.CTk):
             label = tk.Label(self.chart_container, text=f"Error: {e}", bg="white", font=("Sarabun", 12), fg="red")
             label.pack(fill="both", expand=True)
 
-    # ============ PLAY SOUND ============
     def play_sounds_sequential(self, filename):
-        """Play a short sound file from Voices/ on a daemon thread."""
         def _play(f=filename):
             try:
                 if not f.endswith(".mp3"):
@@ -618,19 +594,17 @@ class AntiTriggerFingersApp(ctk.CTk):
                     sound.play()
             except Exception as e:
                 print(f"Sound error: {e}")
-
         threading.Thread(target=_play, daemon=True).start()
 
-    # ============ HISTORY UI ============
     def load_history(self):
-        """Load history text from file"""
         try:
             with open("Anti-Finger.txt", "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except FileNotFoundError:
             lines = ["No history found.\n"]
-
-        max_lines = 1000000000000
+        
+        # Limit lines to prevent lag
+        max_lines = 5000 
         if len(lines) > max_lines:
             lines = lines[-max_lines:]
 
@@ -642,13 +616,13 @@ class AntiTriggerFingersApp(ctk.CTk):
 
     def show_main_page(self):
         self.history_page.pack_forget()
-        self.main_content_frame.pack(side="top", fill="both", expand=True, pady=20)
+        self.main_content_frame.pack(side="top", fill="both", expand=True, pady=int(20 * self.scale_h))
         self.play_sounds_sequential("010.mp3")
 
     def show_history_page(self):
         self.main_content_frame.pack_forget()
         self.play_sounds_sequential("009.mp3")
-        self.history_page.pack(side="top", fill="both", expand=True, pady=20)
+        self.history_page.pack(side="top", fill="both", expand=True, pady=int(20 * self.scale_h))
         self.draw_progress_chart()
         self.load_history()
 
@@ -662,7 +636,6 @@ class AntiTriggerFingersApp(ctk.CTk):
         except Exception as e:
             print(f"Error writing log: {e}")
 
-    # ============ CAMERA CHECK (FALLBACK) ============
     def check_fingers(self):
         try:
             ret, frame = self.cap.read()
@@ -677,9 +650,7 @@ class AntiTriggerFingersApp(ctk.CTk):
         except Exception as e:
             print(f"[check_fingers] Error: {e}")
 
-    # ============ MEDIAPIPE BACKGROUND LOOP ============
     def _mediapipe_loop(self):
-        """Background MediaPipe detection thread"""
         mp_hands = mp.solutions.hands
         mp_drawing = mp.solutions.drawing_utils
         drawing_spec_landmark = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=4)
@@ -699,7 +670,6 @@ class AntiTriggerFingersApp(ctk.CTk):
         }
 
         def _angle_between(a, b):
-            import math
             ax, ay = a
             bx, by = b
             dot = ax * bx + ay * by
@@ -714,7 +684,6 @@ class AntiTriggerFingersApp(ctk.CTk):
             while self.mp_running:
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("[MediaPipe] Frame capture failed, retrying...")
                     time.sleep(0.01)
                     continue
 
@@ -723,7 +692,6 @@ class AntiTriggerFingersApp(ctk.CTk):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = hands.process(rgb)
 
-                # Initialize angles with default values
                 thumb_a = index_a = middle_a = ring_a = pinky_a = 0
                 pose_match = False
 
@@ -740,28 +708,24 @@ class AntiTriggerFingersApp(ctk.CTk):
                             return (lm[idx].x * w, lm[idx].y * h)
 
                         wrist = to_pt(0)
-
-                        # Thumb
+                        
+                        # Calculate angles
                         v1 = (to_pt(4)[0] - to_pt(2)[0], to_pt(4)[1] - to_pt(2)[1])
                         v2 = (wrist[0] - to_pt(2)[0], wrist[1] - to_pt(2)[1])
                         thumb_a = _angle_between(v1, v2)
 
-                        # Index
                         v1 = (to_pt(8)[0] - to_pt(5)[0], to_pt(8)[1] - to_pt(5)[1])
                         v2 = (wrist[0] - to_pt(5)[0], wrist[1] - to_pt(5)[1])
                         index_a = _angle_between(v1, v2)
 
-                        # Middle
                         v1 = (to_pt(12)[0] - to_pt(9)[0], to_pt(12)[1] - to_pt(9)[1])
                         v2 = (wrist[0] - to_pt(9)[0], wrist[1] - to_pt(9)[1])
                         middle_a = _angle_between(v1, v2)
 
-                        # Ring
                         v1 = (to_pt(16)[0] - to_pt(13)[0], to_pt(16)[1] - to_pt(13)[1])
                         v2 = (wrist[0] - to_pt(13)[0], wrist[1] - to_pt(13)[1])
                         ring_a = _angle_between(v1, v2)
 
-                        # Pinky
                         v1 = (to_pt(20)[0] - to_pt(17)[0], to_pt(20)[1] - to_pt(17)[1])
                         v2 = (wrist[0] - to_pt(17)[0], wrist[1] - to_pt(17)[1])
                         pinky_a = _angle_between(v1, v2)
@@ -799,6 +763,7 @@ class AntiTriggerFingersApp(ctk.CTk):
                         img = img.crop((0, top, src_w, top + new_h))
                     return img.resize((target_w, target_h), Image.LANCZOS)
 
+                # Use dynamic dimensions
                 pil_img = _crop_and_resize(pil_img, self.camera_width, self.camera_height)
 
                 try:
@@ -808,7 +773,6 @@ class AntiTriggerFingersApp(ctk.CTk):
                     ))
                 except RuntimeError:
                     break
-
                 time.sleep(0.02)
         finally:
             hands.close()
@@ -828,7 +792,7 @@ class AntiTriggerFingersApp(ctk.CTk):
             self.camera_photo = ImageTk.PhotoImage(pil_image)
             self.camera_label.configure(image=self.camera_photo)
         except Exception as e:
-            print(f"[Camera Update] {e}")
+            pass
 
     def timer_reset(self):
         self.time_current = self.time_max
@@ -883,7 +847,7 @@ class AntiTriggerFingersApp(ctk.CTk):
                 prev = getattr(self, "_timer_prev_sec", self.time_current + 1)
                 interp = prev + (self.time_current - prev) * t
                 interp = max(float(self.time_current), min(float(prev), interp))
-                secs = int(__import__("math").ceil(interp))
+                secs = int(math.ceil(interp))
             except Exception:
                 secs = int(max(0, self.time_current))
             self.timer_canvas.itemconfig(self.timer_text, text=str(secs))
@@ -898,7 +862,6 @@ class AntiTriggerFingersApp(ctk.CTk):
                 self.timer_canvas.create_arc(l, l, r, r, start=-90, extent=-360 * self._timer_anim_to, style="arc", width=10, outline="#3CB371", tags="progress")
                 self.timer_canvas.itemconfig(self.timer_text, text=str(self.time_current))
         except Exception as e:
-            print(f"[_animate_timer] {e}")
             self.timer_anim_job = None
 
     def _stop_timer_animation(self):
@@ -917,7 +880,7 @@ class AntiTriggerFingersApp(ctk.CTk):
             self.timer_canvas.create_arc(l, l, r, r, start=-90, extent=-extent, style="arc", width=10, outline="#3CB371", tags="progress")
             self.timer_canvas.itemconfig(self.timer_text, text=str(self.time_current))
         except Exception as e:
-            print(f"[_stop_timer_animation] {e}")
+            pass
 
     def update_text(self):
         self.Label_pose_action_text.configure(text=f"{self.pose_name[self.current_pose]}")
@@ -929,8 +892,9 @@ class AntiTriggerFingersApp(ctk.CTk):
 
     def update_EX_pose(self):
         try:
+            img_size = int(300 * self.u_scale)
             small_hand_image_pil = Image.open(f"pictures/EX_POSE/pose{self.current_pose}.png")
-            small_hand_image_pil = small_hand_image_pil.resize((300, 300))
+            small_hand_image_pil = small_hand_image_pil.resize((img_size, img_size))
             self.small_hand_photo = ImageTk.PhotoImage(small_hand_image_pil)
             self.small_hand_label.configure(image=self.small_hand_photo)
         except:
@@ -962,8 +926,7 @@ class AntiTriggerFingersApp(ctk.CTk):
     def _animate_countdown(self):
         if not self.countdown_active:
             return
-        import math, time as _time
-        now = _time.time()
+        now = time.time()
         remaining = self.countdown_end_time - now
         if remaining <= 0:
             self.countdown_active = False
@@ -1056,26 +1019,26 @@ class AntiTriggerFingersApp(ctk.CTk):
             try:
                 self.check_fingers()
             except Exception as e:
-                print(f"[check_sensor_loop] check_fingers error: {e}")
+                pass
 
             if self.hand_posit == 5 and self.time_current > 0 and not self.still_hold:
                 try:
                     self.time_current -= 1
                     self.update_timer()
                 except Exception as e:
-                    print(f"[check_sensor_loop] timer update error: {e}")
+                    pass
 
                 if self.time_current <= 0:
                     try:
                         delay_ms = int(getattr(self, "_timer_anim_duration", 1.0) * 1000) + 50
                         self.after(delay_ms, self._on_pose_success)
                     except Exception as e:
-                        print(f"[check_sensor_loop] scheduling _on_pose_success error: {e}")
+                        pass
 
         try:
             self.after(1000, self.check_sensor_loop)
         except Exception as e:
-            print(f"[check_sensor_loop] scheduling error: {e}")
+            pass
 
     def _on_pose_success(self):
         try:
@@ -1103,12 +1066,10 @@ class AntiTriggerFingersApp(ctk.CTk):
                 try:
                     self.play_sounds_sequential(sound_file)
                 except Exception as e:
-                    print(f"[_on_pose_success] play sound error: {e}")
+                    pass
         except Exception as e:
-            print(f"[_on_pose_success] error: {e}")
+            pass
 
-
-# --- Run App ---
 if __name__ == "__main__":
     app = AntiTriggerFingersApp()
     app.mainloop()

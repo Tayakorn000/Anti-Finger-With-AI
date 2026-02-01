@@ -7,7 +7,7 @@ FILE_PATH = "Anti-Finger.txt"
 num_days = 30
 
 # วันเริ่มต้น
-start_date = datetime(2025, 10, 1, 8, 0, 0)
+start_date = datetime(2026, 1, 1, 8, 30, 0)
 
 # รายการท่าฝึก (5 ท่า)
 exercises = [
