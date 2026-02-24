@@ -1,0 +1,14 @@
+[Unit]
+Description=Anti-Finger Script              
+After=graphical.target
+
+[Service]
+WorkingDirectory=/home/finger/Anti-Finger
+ExecStart=/home/finger/Anti-Finger/Anti-Finger.sh
+Restart=on-failure
+User=finger
+Environment="VIRTUAL_ENV=/home/finger/Anti-Finger/venv"
+Environment="PATH=/home/finger/Anti-Finger/venv/bin:$PATH"
+
+[Install]
+WantedBy=graphical.target
